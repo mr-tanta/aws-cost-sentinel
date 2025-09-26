@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, aws_accounts, cost_analysis, waste_detection, recommendations, reports, dashboard
+from app.api.v1.endpoints import auth, aws_accounts, cost_analysis, waste_detection, recommendations, reports, dashboard, jobs, websocket
 
 api_router = APIRouter()
 
@@ -12,3 +12,5 @@ api_router.include_router(waste_detection.router, prefix="/waste", tags=["waste-
 api_router.include_router(recommendations.router, prefix="/recommendations", tags=["recommendations"])
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+api_router.include_router(jobs.router, prefix="/jobs", tags=["background-jobs"])
+api_router.include_router(websocket.router, prefix="/ws", tags=["websocket"])

@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 import structlog
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -55,13 +56,40 @@ async def lifespan(app: FastAPI):
     # await init_database()
     # await init_cache()
 
+    # Start WebSocket cleanup task
+    from app.services.websocket_service import websocket_manager
+    cleanup_task = asyncio.create_task(websocket_cleanup_worker())
+
     yield
 
     # Shutdown
     logger.info("Shutting down AWS Cost Sentinel API")
+
+    # Cancel cleanup task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
     # Cleanup resources
     # await cleanup_database()
     # await cleanup_cache()
+
+
+async def websocket_cleanup_worker():
+    """Background task to clean up stale WebSocket connections"""
+    from app.services.websocket_service import websocket_manager
+
+    while True:
+        try:
+            await websocket_manager.cleanup_stale_connections()
+            await asyncio.sleep(300)  # Run every 5 minutes
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("WebSocket cleanup error", error=str(e))
+            await asyncio.sleep(60)  # Wait 1 minute on error
 
 
 # Create FastAPI app
@@ -91,6 +119,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Monitoring middleware
+from app.middleware.monitoring import (
+    MonitoringMiddleware,
+    PerformanceMiddleware,
+    UserActivityMiddleware,
+    DatabaseMiddleware,
+    SecurityMiddleware
+)
+
+app.add_middleware(SecurityMiddleware)
+app.add_middleware(UserActivityMiddleware)
+app.add_middleware(DatabaseMiddleware)
+app.add_middleware(PerformanceMiddleware, slow_request_threshold=2.0)
+app.add_middleware(MonitoringMiddleware)
+
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
@@ -109,28 +152,66 @@ async def root():
 async def health_check():
     """Health check endpoint for load balancers and monitoring"""
     try:
-        # Add database health check
-        # db_status = await check_database_health()
-        # redis_status = await check_redis_health()
+        from app.services.health_service import health_service
 
-        return {
-            "status": "healthy",
+        # Run comprehensive health checks
+        health_result = await health_service.check_all(include_details=False)
+
+        # Return 503 if any critical components are unhealthy
+        status_code = 200
+        if health_result["status"] == "unhealthy":
+            status_code = 503
+        elif health_result["status"] == "degraded":
+            status_code = 200  # Still accepting traffic but with warnings
+
+        # Format response for load balancers
+        response = {
+            "status": health_result["status"],
             "version": settings.VERSION,
             "environment": settings.ENVIRONMENT,
-            # "database": db_status,
-            # "redis": redis_status,
-            "timestamp": "2025-01-01T00:00:00Z"  # Use actual timestamp
+            "timestamp": health_result["timestamp"],
+            "summary": health_result["summary"]
         }
+
+        if status_code == 503:
+            raise HTTPException(status_code=503, detail=response)
+
+        return response
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Health check failed", error=str(e))
         raise HTTPException(status_code=503, detail="Service unavailable")
 
 
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check with full component status"""
+    try:
+        from app.services.health_service import health_service
+        return await health_service.check_all(include_details=True)
+    except Exception as e:
+        logger.error("Detailed health check failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+
+@app.get("/health/{component}")
+async def component_health_check(component: str):
+    """Health check for a specific component"""
+    try:
+        from app.services.health_service import health_service
+        return await health_service.check_component(component)
+    except Exception as e:
+        logger.error("Component health check failed", error=str(e), component=component)
+        raise HTTPException(status_code=500, detail=f"Component health check failed: {component}")
+
+
 @app.get("/metrics")
 async def metrics():
     """Prometheus metrics endpoint"""
-    # TODO: Implement Prometheus metrics
-    return {"metrics": "TODO: Implement Prometheus metrics"}
+    from app.services.metrics_service import metrics_service
+    return metrics_service.export_metrics()
 
 
 if __name__ == "__main__":

@@ -79,7 +79,28 @@ services:
       - /app/venv
     command: celery -A app.tasks.celery_app worker --loglevel=info
 
-  # Celery Beat (Scheduler)
+  # Job Worker (Our custom queue processor)
+  job-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:password@postgres:5432/cost_sentinel
+      - DATABASE_SYNC_URL=postgresql://postgres:password@postgres:5432/cost_sentinel
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - DEBUG=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/venv
+    command: python -m app.workers.job_worker --queue default --worker-id docker-worker-1
+
+  # Celery Beat (Scheduler) - Keep for compatibility if needed
   celery-beat:
     build:
       context: .

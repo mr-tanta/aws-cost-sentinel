@@ -134,49 +134,18 @@ async def get_current_user_id(
         raise credentials_exception
 
 
-class RateLimiter:
-    """Simple rate limiter using in-memory storage"""
-
-    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        self.requests = {}  # In production, use Redis
-
-    def is_allowed(self, client_id: str) -> bool:
-        """Check if request is allowed for the client"""
-        now = datetime.utcnow()
-        window_start = now - timedelta(seconds=self.window_seconds)
-
-        # Clean old entries
-        if client_id in self.requests:
-            self.requests[client_id] = [
-                req_time for req_time in self.requests[client_id]
-                if req_time > window_start
-            ]
-        else:
-            self.requests[client_id] = []
-
-        # Check if under limit
-        if len(self.requests[client_id]) >= self.max_requests:
-            return False
-
-        # Add current request
-        self.requests[client_id].append(now)
-        return True
-
-
-# Global rate limiter
-rate_limiter = RateLimiter(
-    max_requests=settings.RATE_LIMIT_PER_MINUTE,
-    window_seconds=60
-)
-
-
 async def check_rate_limit(request: Request):
-    """Rate limiting dependency"""
+    """Rate limiting dependency using Redis cache"""
+    from app.services.cache_service import cache_service
+
     client_ip = request.client.host
 
-    if not rate_limiter.is_allowed(client_ip):
+    # Use Redis-based rate limiting
+    if cache_service.is_rate_limited(
+        identifier=client_ip,
+        limit=settings.RATE_LIMIT_PER_MINUTE,
+        window=60
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded. Try again later."
